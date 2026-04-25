@@ -19,3 +19,6 @@ A high-energy, retro pixel-art arcade game built with vanilla JavaScript and the
 - **Graphics:** HTML5 Canvas
 - **Audio:** Web Audio API
 - **Zero Dependencies:** No engines or libraries used.
+
+# Use Of AI 
+I have used AI for creating the images and also for helping me code.
