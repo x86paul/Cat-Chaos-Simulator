@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cat Chaos Simulator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gc"></canvas>
+    <script>
+        const C = document.getElementById("gc"), ctx = C.getContext("2d");
+        const SCALE = 3;
+        const GW = 220, GH = 200;
+        C.width = GW * SCALE; C.height = GH * SCALE;
+        ctx.imageSmoothingEnabled = false;
+
+        // offscreen pixel canvas
+        const oc = document.createElement("canvas"); oc.width = GW; oc.height = GH;
+        const g = oc.getContext("2d"); g.imageSmoothingEnabled = false;
+
+        const PT = 28;
+        let state = "menu", player, objects, score, spawnTimer, lives, combo, comboTimer, invincTimer;
+        let shake = 0, particles = [], floaters = [], stars = [];
+        let keys = {}, lastTime = 0, highScore = 0, mx = 0, my = 0;
+        let audioCtx = null;
+
+        function getAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); return audioCtx; }
+
+        function makeNoise(a, dur, vol) {
+            try {
+                const buf = a.createBuffer(1, a.sampleRate * dur, a.sampleRate);
+                const d = buf.getChannelData(0);
+                for (let i = 0; i < d.length; i++)d[i] = (Math.random() * 2 - 1);
+                const src = a.createBufferSource(); src.buffer = buf;
+                const g = a.createGain();
+                src.connect(g); g.connect(a.destination);
+                g.gain.setValueAtTime(vol, a.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
+                src.start(); src.stop(a.currentTime + dur);
+                return g;
+            } catch (e) { }
+        }
+
+        function tone(a, freq, type, start, dur, vol, freqEnd, freqTime) {
+            try {
+                const o = a.createOscillator(), g = a.createGain();
+                o.connect(g); g.connect(a.destination);
+                o.type = type; o.frequency.setValueAtTime(freq, a.currentTime + start);
+                if (freqEnd != null) o.frequency.linearRampToValueAtTime(freqEnd, a.currentTime + start + (freqTime || dur));
+                g.gain.setValueAtTime(0.001, a.currentTime + start);
+                g.gain.linearRampToValueAtTime(vol, a.currentTime + start + 0.005);
+                g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + start + dur);
+                o.start(a.currentTime + start); o.stop(a.currentTime + start + dur + 0.01);
+            } catch (e) { }
+        }
+
+        function sfxCollect() {
+            try {
+                const a = getAudio();
+                tone(a, 523, "square", 0, 0.08, 0.12);
+                tone(a, 659, "square", 0.06, 0.1, 0.1);
+                tone(a, 784, "triangle", 0.12, 0.12, 0.08);
+                tone(a, 1047, "triangle", 0.18, 0.15, 0.1);
+            } catch (e) { }
+        }
+
+        function sfxFish() {
+            try {
+                const a = getAudio();
+                tone(a, 440, "sine", 0, 0.05, 0.1, 880, 0.05);
+                tone(a, 660, "sine", 0.04, 0.05, 0.08, 1320, 0.05);
+                tone(a, 880, "triangle", 0.08, 0.1, 0.12);
+            } catch (e) { }
+        }
+
+        function sfxStar() {
+            try {
+                const a = getAudio();
+                [523, 659, 784, 1047, 1319].forEach((f, i) => {
+                    tone(a, f, "square", i * 0.04, 0.1, 0.1);
+                    tone(a, f * 2, "triangle", i * 0.04 + 0.02, 0.08, 0.06);
+                });
+            } catch (e) { }
+        }
+
+        function sfxCombo() {
+            try {
+                const a = getAudio();
+                let notes = [330, 415, 494, 659, 784, 988, 1319];
+                notes.forEach((f, i) => {
+                    tone(a, f, "square", i * 0.045, 0.12, 0.13);
+                    tone(a, f * 1.5, "triangle", i * 0.045 + 0.01, 0.08, 0.07);
+                });
+                makeNoise(a, 0.08, 0.04);
+            } catch (e) { }
+        }
+
+        function sfxHit() {
+            try {
+                const a = getAudio();
+                tone(a, 220, "sawtooth", 0, 0.04, 0.25, 80, 0.04);
+                tone(a, 110, "sawtooth", 0.03, 0.08, 0.2, 55, 0.08);
+                makeNoise(a, 0.06, 0.15);
+                tone(a, 180, "square", 0, 0.05, 0.15, 60, 0.05);
+            } catch (e) { }
+        }
+
+        function sfxDie() {
+            try {
+                const a = getAudio();
+                let notes = [392, 330, 262, 220, 196, 165, 131, 110, 82];
+                notes.forEach((f, i) => {
+                    tone(a, f, "sawtooth", i * 0.09, 0.12, 0.18);
+                    tone(a, f * 0.5, "square", i * 0.09 + 0.02, 0.1, 0.1);
+                });
+                makeNoise(a, 0.3, 0.12);
+            } catch (e) { }
+        }
+
+        function sfxStart() {
+            try {
+                const a = getAudio();
+                let melody = [261, 329, 392, 523, 659, 784, 1047];
+                melody.forEach((f, i) => {
+                    tone(a, f, "square", i * 0.07, 0.1, 0.12);
+                    tone(a, f * 1.26, "triangle", i * 0.07 + 0.01, 0.08, 0.07);
+                    if (i === melody.length - 1) {
+                        tone(a, f, "square", i * 0.07 + 0.1, 0.3, 0.1);
+                        tone(a, f * 1.26, "triangle", i * 0.07 + 0.1, 0.3, 0.08);
+                        tone(a, f * 1.5, "triangle", i * 0.07 + 0.1, 0.3, 0.06);
+                    }
+                });
+            } catch (e) { }
+        }
+
+        function sfxMenu() {
+            try {
+                const a = getAudio();
+                tone(a, 440, "square", 0, 0.06, 0.1);
+                tone(a, 554, "square", 0.05, 0.08, 0.1);
+                tone(a, 659, "triangle", 0.1, 0.12, 0.1);
+            } catch (e) { }
+        }
+
+        function sfxLowLife() {
+            try {
+                const a = getAudio();
+                tone(a, 220, "sawtooth", 0, 0.06, 0.2, 180, 0.06);
+                tone(a, 180, "sawtooth", 0.07, 0.06, 0.18, 140, 0.06);
+                tone(a, 140, "sawtooth", 0.14, 0.1, 0.15, 110, 0.1);
+                makeNoise(a, 0.05, 0.08);
+            } catch (e) { }
+        }
+
+        // stars
+        for (let i = 0; i < 40; i++)stars.push({ x: Math.random() * GW, y: PT + Math.random() * (GH - PT - 12), tw: Math.random() * Math.PI * 2 });
+
+        document.addEventListener("keydown", e => { keys[e.key] = true; if (["ArrowLeft", "ArrowRight", " "].includes(e.key)) e.preventDefault(); });
+        document.addEventListener("keyup", e => keys[e.key] = false);
+
+        // ── PIXEL DRAWING HELPERS ──────────────────────────────────────────────────
+        function px(g, x, y, c) { g.fillStyle = c; g.fillRect(x, y, 1, 1); }
+        function pxr(g, x, y, w, h, c) { g.fillStyle = c; g.fillRect(x, y, w, h); }
+
+        // ── PIXEL ART SPRITES ──────────────────────────────────────────────────────
+        // Each sprite drawn on 16x16 or 14x14 pixel grid
+
+        function drawPixelCat(g, x, y, facing, frame, blink) {
+            // frame 0=stand, 1=walk
+            let legOff = frame === 1 ? 1 : 0;
+            g.save();
+            if (facing === -1) { g.translate(x + 8, 0); g.scale(-1, 1); g.translate(-x - 8, 0); }
+
+            // tail
+            pxr(g, x - 2, y + 8, 2, 1, "#c8843a");
+            pxr(g, x - 3, y + 6, 1, 2, "#c8843a");
+            pxr(g, x - 2, y + 5, 1, 1, "#e8a040");
+
+            // body
+            pxr(g, x + 1, y + 8, 10, 6, "#f0c060");
+            pxr(g, x + 2, y + 9, 8, 4, "#f5d070");
+            // belly stripe
+            pxr(g, x + 3, y + 10, 6, 2, "#fde9a0");
+
+            // head
+            pxr(g, x + 2, y + 1, 10, 8, "#f0c060");
+            pxr(g, x + 3, y + 0, 8, 2, "#f0c060");
+
+            // ears
+            pxr(g, x + 2, y + 0, 2, 2, "#f0c060");
+            pxr(g, x + 3, y - 1, 1, 1, "#f0c060");
+            px(g, x + 10, y + 0, "#f0c060"); px(g, x + 11, y + 0, "#f0c060");
+            px(g, x + 10, y - 1, "#f0c060");
+            // ear inner
+            px(g, x + 3, y + 0, "#f9a0a0");
+            px(g, x + 10, y + 0, "#f9a0a0");
+
+            // eyes
+            if (blink) {
+                pxr(g, x + 4, y + 4, 2, 1, "#3a2a0a");
+                pxr(g, x + 8, y + 4, 2, 1, "#3a2a0a");
+            } else {
+                pxr(g, x + 4, y + 3, 2, 2, "#1a1a0a");
+                pxr(g, x + 8, y + 3, 2, 2, "#1a1a0a");
+                px(g, x + 5, y + 3, "#ffffffcc");
+                px(g, x + 9, y + 3, "#ffffffcc");
+            }
+
+            // nose
+            px(g, x + 6, y + 6, "#e07080"); px(g, x + 7, y + 6, "#e07080");
+
+            // whiskers
+            pxr(g, x - 1, y + 6, 3, 1, "rgba(60,40,10,0.5)");
+            pxr(g, x + 12, y + 6, 3, 1, "rgba(60,40,10,0.5)");
+            pxr(g, x - 1, y + 7, 2, 1, "rgba(60,40,10,0.4)");
+            pxr(g, x + 13, y + 7, 2, 1, "rgba(60,40,10,0.4)");
+
+            // legs & paws
+            pxr(g, x + 2, y + 13, 3, 3 + legOff, "#e8a040");
+            pxr(g, x + 9, y + 13, 3, 3 + (1 - legOff), "#e8a040");
+            pxr(g, x + 1, y + 15 + legOff, 4, 2, "#f0b050");
+            pxr(g, x + 9, y + 15 + (1 - legOff), 4, 2, "#f0b050");
+
+            g.restore();
+        }
+
+        function drawPixelBomb(g, x, y, frame) {
+            // body - circle-ish
+            pxr(g, x + 2, y + 4, 8, 8, "#222222");
+            pxr(g, x + 1, y + 5, 10, 6, "#222222");
+            pxr(g, x + 3, y + 3, 6, 1, "#222222");
+            pxr(g, x + 3, y + 12, 6, 1, "#222222");
+            // shine
+            pxr(g, x + 3, y + 5, 2, 2, "#444444");
+            // fuse base
+            pxr(g, x + 8, y + 3, 2, 2, "#888888");
+            // fuse
+            px(g, x + 9, y + 2, "#c09050"); px(g, x + 10, y + 1, "#c09050"); px(g, x + 9, y + 0, "#c09050");
+            // spark - animated
+            let spOff = frame % 2;
+            px(g, x + 9, y - 1 + spOff, "#FFD700"); px(g, x + 10, y - 1 + spOff, "#FF8800");
+            px(g, x + 8, y - 2 + spOff, "#FF6600");
+        }
+
+        function drawPixelChair(g, x, y) {
+            let w = "#6b3f1e", l = "#8b5e3c";
+            // seat
+            pxr(g, x + 1, y + 8, 12, 3, l); pxr(g, x + 2, y + 8, 10, 2, w);
+            // back
+            pxr(g, x + 1, y + 2, 3, 7, l); pxr(g, x + 2, y + 2, 2, 6, w);
+            // top rail
+            pxr(g, x + 1, y + 1, 12, 2, l);
+            // legs
+            pxr(g, x + 2, y + 11, 2, 5, w);
+            pxr(g, x + 10, y + 11, 2, 5, w);
+            // crossbar
+            pxr(g, x + 4, y + 13, 6, 2, l);
+        }
+
+        function drawPixelPiano(g, x, y) {
+            // body
+            pxr(g, x, y + 4, 16, 10, "#111111");
+            pxr(g, x + 1, y + 5, 14, 8, "#1a1a1a");
+            // keys bg
+            pxr(g, x + 1, y + 6, 14, 6, "#f5f0e0");
+            // white keys
+            for (let k = 0; k < 5; k++) { pxr(g, x + 2 + k * 3, y + 6, 2, 5, "#fffdf5"); pxr(g, x + 2 + k * 3, y + 11, 2, 1, "#cccccc"); }
+            // black keys
+            for (let k of [0, 1, 3, 4]) { pxr(g, x + 3 + k * 3, y + 6, 2, 3, "#111111"); }
+            // lid
+            pxr(g, x, y, 16, 5, "#0a0a0a");
+            pxr(g, x + 1, y + 1, 14, 3, "#111111");
+        }
+
+        function drawPixelMagnet(g, x, y, frame) {
+            let r = "#cc2222", b = "#3355cc", s = "#dddddd";
+            // left arm
+            pxr(g, x + 2, y + 4, 3, 10, r);
+            // right arm
+            pxr(g, x + 10, y + 4, 3, 10, b);
+            // top arch
+            pxr(g, x + 2, y + 3, 11, 2, r); pxr(g, x + 5, y + 1, 6, 3, "#aa1111");
+            pxr(g, x + 5, y + 2, 5, 2, "#cc2222");
+            // tips
+            pxr(g, x + 2, y + 13, 3, 3, s);
+            pxr(g, x + 10, y + 13, 3, 3, s);
+            // spark
+            if (frame % 2 === 0) { px(g, x + 1, y + 15, "#FFD700"); px(g, x + 13, y + 15, "#FFD700"); }
+        }
+
+        function drawPixelPizza(g, x, y) {
+            // crust
+            pxr(g, x + 2, y + 13, 10, 3, "#c8883a");
+            // dough
+            g.fillStyle = "#f0a830";
+            g.beginPath();
+            g.moveTo(x + 7, y + 1); g.lineTo(x + 1, y + 13); g.lineTo(x + 13, y + 13); g.closePath(); g.fill();
+            // sauce
+            g.fillStyle = "#d43a20";
+            g.beginPath();
+            g.moveTo(x + 7, y + 4); g.lineTo(x + 3, y + 12); g.lineTo(x + 11, y + 12); g.closePath(); g.fill();
+            // cheese
+            g.fillStyle = "#fde870";
+            g.beginPath();
+            g.moveTo(x + 7, y + 6); g.lineTo(x + 4, y + 12); g.lineTo(x + 10, y + 12); g.closePath(); g.fill();
+            // pepperoni pixels
+            pxr(g, x + 6, y + 8, 2, 2, "#8b2020");
+            pxr(g, x + 4, y + 11, 2, 1, "#8b2020");
+            pxr(g, x + 9, y + 10, 2, 1, "#8b2020");
+        }
+
+        function drawPixelFish(g, x, y, frame) {
+            let swimOff = frame % 2 === 0 ? 0 : 1;
+            // tail
+            g.fillStyle = "#3a8fc8";
+            g.beginPath(); g.moveTo(x + 11, y + 6 + swimOff); g.lineTo(x + 15, y + 3); g.lineTo(x + 15, y + 11); g.closePath(); g.fill();
+            // body
+            pxr(g, x + 2, y + 5, 9, 6, "#4aa8e0");
+            pxr(g, x + 1, y + 6, 11, 4, "#4aa8e0");
+            pxr(g, x + 3, y + 4, 7, 1, "#4aa8e0");
+            // belly
+            pxr(g, x + 3, y + 7, 6, 2, "#b8e0f7");
+            // scales
+            pxr(g, x + 5, y + 5, 2, 1, "#3080b0");
+            pxr(g, x + 8, y + 5, 2, 1, "#3080b0");
+            pxr(g, x + 6, y + 7, 2, 1, "#3080b0");
+            // fin
+            pxr(g, x + 5, y + 3, 3, 2, "#2a7ab0");
+            // eye
+            pxr(g, x + 2, y + 6, 2, 2, "#ffffff");
+            px(g, x + 2, y + 6, "#1a1a1a"); px(g, x + 3, y + 6, "#1a1a1a");
+            px(g, x + 2, y + 7, "#1a1a1a");
+            px(g, x + 3, y + 7, "#ffffff");
+            // mouth
+            px(g, x + 1, y + 8, "#1a6090");
+        }
+
+        function drawPixelStar(g, x, y, frame) {
+            let c1 = "#FFD700", c2 = "#FF9900", shine = frame % 4 < 2 ? "#ffffff" : "#ffe066";
+            // 8-point pixel star
+            pxr(g, x + 5, y + 1, 4, 12, c1);
+            pxr(g, x + 1, y + 5, 12, 4, c1);
+            pxr(g, x + 3, y + 3, 2, 2, c1); pxr(g, x + 9, y + 3, 2, 2, c1);
+            pxr(g, x + 3, y + 9, 2, 2, c1); pxr(g, x + 9, y + 9, 2, 2, c1);
+            // center
+            pxr(g, x + 4, y + 4, 6, 6, c2);
+            pxr(g, x + 5, y + 3, 4, 8, c2);
+            pxr(g, x + 3, y + 5, 8, 4, c2);
+            // shine
+            pxr(g, x + 5, y + 4, 2, 2, shine);
+        }
+
+        function drawPixelHeart(g, x, y, filled) {
+            let c = filled ? "#ff4466" : "#442233";
+            pxr(g, x + 1, y + 0, 2, 2, c); pxr(g, x + 4, y + 0, 2, 2, c);
+            pxr(g, x + 0, y + 1, 6, 3, c);
+            pxr(g, x + 1, y + 4, 4, 1, c);
+            pxr(g, x + 2, y + 5, 2, 1, c);
+            px(g, x + 3, y + 6, c);
+            if (filled) { pxr(g, x + 1, y + 1, 2, 1, "#ff8899"); }
+        }
+
+        const DRAWERS = { bomb: drawPixelBomb, chair: drawPixelChair, piano: drawPixelPiano, magnet: drawPixelMagnet, pizza: drawPixelPizza, fish: drawPixelFish, star: drawPixelStar };
+
+        const ITEMS = [
+            { id: "bomb", bad: true, pts: 0, w: 1 },
+            { id: "chair", bad: true, pts: 0, w: 1.5 },
+            { id: "magnet", bad: true, pts: 0, w: 1 },
+            { id: "piano", bad: true, pts: 0, w: 0.7 },
+            { id: "pizza", bad: false, pts: 5, w: 1 },
+            { id: "fish", bad: false, pts: 10, w: 0.6 },
+            { id: "star", bad: false, pts: 15, w: 0.3 },
+        ];
+
+        function weightedItem(sc) {
+            let pool = sc < 5 ? ITEMS.filter(x => x.bad) : ITEMS;
+            let total = pool.reduce((s, x) => s + x.w, 0), r = Math.random() * total;
+            for (let item of pool) { r -= item.w; if (r <= 0) return item; }
+            return pool[0];
+        }
+
+        function startGame() {
+            player = { x: 100, y: GH - 54, w: 14, h: 18, speed: 2.5, vx: 0, facing: 1, frame: 0, frameTimer: 0, blink: 0, blinkTimer: 0 };
+            objects = []; score = 0; spawnTimer = 0; lives = 9; combo = 0; comboTimer = 0; invincTimer = 0;
+            particles = []; floaters = []; state = "playing";
+            sfxStart();
+        }
+
+        function addParticles(x, y, colors, count) {
+            for (let i = 0; i < count; i++) {
+                let a = Math.random() * Math.PI * 2, spd = 0.5 + Math.random() * 2;
+                particles.push({ x, y, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, life: 16 + Math.random() * 12, maxLife: 28, c: colors[Math.floor(Math.random() * colors.length)] });
+            }
+        }
+
+        function loseLife(ox, oy) {
+            lives--; shake = 6; invincTimer = 70;
+            addParticles(ox + 8, oy + 8, ["#ff4444", "#ff8800", "#ffcc00", "#ffffff"], 16);
+            if (lives <= 0) { sfxDie(); setTimeout(() => { state = "gameover"; if (score > highScore) highScore = score; }, 400); }
+            else if (lives <= 3) sfxLowLife();
+            else sfxHit();
+        }
+
+        function collectGood(o) {
+            combo++; comboTimer = 90;
+            let pts = o.item.pts * (combo > 1 ? combo : 1); score += pts;
+            addParticles(o.x + 7, o.y + 7, ["#FFD700", "#ffffff", "#88ffcc"], 10);
+            floaters.push({ x: o.x, y: o.y, text: combo > 1 ? `+${pts}x${combo}` : `+${pts}`, life: 36, vy: -0.5 });
+            if (combo > 4) sfxCombo();
+            else if (o.item.id === "star") sfxStar();
+            else if (o.item.id === "fish") sfxFish();
+            else sfxCollect();
+        }
+
+        let frame = 0;
+        function update() {
+            if (state !== "playing") return;
+            frame++;
+            if (invincTimer > 0) invincTimer--;
+            if (comboTimer > 0) { comboTimer--; if (comboTimer === 0) combo = 0; }
+
+            player.blinkTimer++;
+            if (player.blinkTimer > 90) player.blink = 1;
+            if (player.blinkTimer > 94) { player.blink = 0; player.blinkTimer = 0; }
+
+            let tvx = 0;
+            if (keys["ArrowLeft"] || keys["a"] || keys["A"]) { tvx = -player.speed; player.facing = -1; }
+            if (keys["ArrowRight"] || keys["d"] || keys["D"]) { tvx = player.speed; player.facing = 1; }
+            player.vx = player.vx * 0.6 + tvx * 0.4;
+            player.x = Math.max(0, Math.min(GW - player.w, player.x + player.vx));
+
+            if (Math.abs(player.vx) > 0.3) {
+                player.frameTimer++;
+                if (player.frameTimer > 6) { player.frame = player.frame === 0 ? 1 : 0; player.frameTimer = 0; }
+            } else player.frame = 0;
+
+            spawnTimer++;
+            if (spawnTimer > Math.max(12, 38 - score * 0.3)) {
+                objects.push({ x: 4 + Math.random() * (GW - 22), y: PT - 18, size: 14, speed: 0.8 + score * 0.015 + Math.random() * 0.6, item: weightedItem(score), frame: 0, fTimer: 0 });
+                spawnTimer = 0;
+            }
+
+            for (let i = objects.length - 1; i >= 0; i--) {
+                let o = objects[i]; o.y += o.speed;
+                o.fTimer++; if (o.fTimer > 8) { o.frame++; o.fTimer = 0; }
+                let hit = o.x < player.x + player.w && o.x + o.size > player.x && o.y < player.y + player.h && o.y + o.size > player.y;
+                if (hit) {
+                    if (o.item.bad) { if (invincTimer === 0) loseLife(o.x, o.y); }
+                    else collectGood(o);
+                    objects.splice(i, 1); continue;
+                }
+                if (o.y > GH) { if (!o.item.bad) { combo = 0; comboTimer = 0; } objects.splice(i, 1); score++; }
+            }
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i]; p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.life--;
+                if (p.life <= 0) particles.splice(i, 1);
+            }
+            for (let i = floaters.length - 1; i >= 0; i--) {
+                let f = floaters[i]; f.y += f.vy; f.life--;
+                if (f.life <= 0) floaters.splice(i, 1);
+            }
+            if (shake > 0) shake = Math.max(0, shake - 0.5);
+        }
+
+        // ── FONT (tiny pixel font) ─────────────────────────────────────────────────
+        const FONT = {
+            "0": [[1, 1, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 1, 1]],
+            "1": [[0, 1, 0], [1, 1, 0], [0, 1, 0], [0, 1, 0], [1, 1, 1]],
+            "2": [[1, 1, 1], [0, 0, 1], [1, 1, 1], [1, 0, 0], [1, 1, 1]],
+            "3": [[1, 1, 1], [0, 0, 1], [0, 1, 1], [0, 0, 1], [1, 1, 1]],
+            "4": [[1, 0, 1], [1, 0, 1], [1, 1, 1], [0, 0, 1], [0, 0, 1]],
+            "5": [[1, 1, 1], [1, 0, 0], [1, 1, 1], [0, 0, 1], [1, 1, 1]],
+            "6": [[1, 1, 1], [1, 0, 0], [1, 1, 1], [1, 0, 1], [1, 1, 1]],
+            "7": [[1, 1, 1], [0, 0, 1], [0, 0, 1], [0, 1, 0], [0, 1, 0]],
+            "8": [[1, 1, 1], [1, 0, 1], [1, 1, 1], [1, 0, 1], [1, 1, 1]],
+            "9": [[1, 1, 1], [1, 0, 1], [1, 1, 1], [0, 0, 1], [1, 1, 1]],
+            "A": [[0, 1, 0], [1, 0, 1], [1, 1, 1], [1, 0, 1], [1, 0, 1]],
+            "B": [[1, 1, 0], [1, 0, 1], [1, 1, 0], [1, 0, 1], [1, 1, 0]],
+            "C": [[1, 1, 1], [1, 0, 0], [1, 0, 0], [1, 0, 0], [1, 1, 1]],
+            "D": [[1, 1, 0], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 1, 0]],
+            "E": [[1, 1, 1], [1, 0, 0], [1, 1, 0], [1, 0, 0], [1, 1, 1]],
+            "F": [[1, 1, 1], [1, 0, 0], [1, 1, 0], [1, 0, 0], [1, 0, 0]],
+            "G": [[1, 1, 1], [1, 0, 0], [1, 0, 1], [1, 0, 1], [1, 1, 1]],
+            "H": [[1, 0, 1], [1, 0, 1], [1, 1, 1], [1, 0, 1], [1, 0, 1]],
+            "I": [[1, 1, 1], [0, 1, 0], [0, 1, 0], [0, 1, 0], [1, 1, 1]],
+            "J": [[0, 0, 1], [0, 0, 1], [0, 0, 1], [1, 0, 1], [1, 1, 1]],
+            "K": [[1, 0, 1], [1, 0, 1], [1, 1, 0], [1, 0, 1], [1, 0, 1]],
+            "L": [[1, 0, 0], [1, 0, 0], [1, 0, 0], [1, 0, 0], [1, 1, 1]],
+            "M": [[1, 0, 1], [1, 1, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1]],
+            "N": [[1, 0, 1], [1, 1, 1], [1, 1, 1], [1, 0, 1], [1, 0, 1]],
+            "O": [[1, 1, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 1, 1]],
+            "P": [[1, 1, 1], [1, 0, 1], [1, 1, 1], [1, 0, 0], [1, 0, 0]],
+            "Q": [[1, 1, 1], [1, 0, 1], [1, 0, 1], [1, 1, 1], [0, 0, 1]],
+            "R": [[1, 1, 0], [1, 0, 1], [1, 1, 0], [1, 0, 1], [1, 0, 1]],
+            "S": [[0, 1, 1], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0]],
+            "T": [[1, 1, 1], [0, 1, 0], [0, 1, 0], [0, 1, 0], [0, 1, 0]],
+            "U": [[1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 1, 1]],
+            "V": [[1, 0, 1], [1, 0, 1], [1, 0, 1], [0, 1, 0], [0, 1, 0]],
+            "W": [[1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 1, 1], [1, 0, 1]],
+            "X": [[1, 0, 1], [1, 0, 1], [0, 1, 0], [1, 0, 1], [1, 0, 1]],
+            "Y": [[1, 0, 1], [1, 0, 1], [0, 1, 0], [0, 1, 0], [0, 1, 0]],
+            "Z": [[1, 1, 1], [0, 0, 1], [0, 1, 0], [1, 0, 0], [1, 1, 1]],
+            "+": [[0, 1, 0], [1, 1, 1], [0, 1, 0], [0, 0, 0], [0, 0, 0]],
+            "!": [[0, 1, 0], [0, 1, 0], [0, 1, 0], [0, 0, 0], [0, 1, 0]],
+            ":": [[0, 0, 0], [0, 1, 0], [0, 0, 0], [0, 1, 0], [0, 0, 0]],
+            " ": [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]],
+            "-": [[0, 0, 0], [0, 0, 0], [1, 1, 1], [0, 0, 0], [0, 0, 0]],
+            "x": [[0, 0, 0], [1, 0, 1], [0, 1, 0], [1, 0, 1], [0, 0, 0]],
+        };
+
+        function drawText(g, str, x, y, col) {
+            str = str.toUpperCase();
+            let cx = x;
+            for (let ch of str) {
+                let glyph = FONT[ch] || FONT[" "];
+                for (let r = 0; r < 5; r++)for (let c = 0; c < 3; c++) {
+                    if (glyph[r][c]) { g.fillStyle = col; g.fillRect(cx + c, y + r, 1, 1); }
+                }
+                cx += 4;
+            }
+        }
+
+        function textWidth(str) { return str.length * 4; }
+
+        // ── HUD ───────────────────────────────────────────────────────────────────
+        function drawHUD(g, t) {
+            // top bar bg
+            pxr(g, 0, 0, GW, PT, "#0a0c1e");
+            // bottom bar bg
+            pxr(g, 0, GH - 12, GW, 12, "#0a0c1e");
+            // divider lines
+            pxr(g, 0, PT - 1, GW, 1, "#333366");
+            pxr(g, 0, GH - 13, GW, 1, "#333366");
+
+            // Lives - 9 hearts in two rows (5 top, 4 bottom), colour coded
+            for (let i = 0; i < 9; i++) {
+                let row = i < 5 ? 0 : 1;
+                let col = i < 5 ? i : i - 5;
+                let hx = 2 + col * 9, hy = 1 + row * 9;
+                let filled = i < lives;
+                let hc;
+                if (!filled) hc = "#331122";
+                else if (lives <= 3) hc = "#ff2244";
+                else if (lives <= 6) hc = "#ffaa00";
+                else hc = "#44ff88";
+                // heart shape
+                pxr(g, hx + 1, hy + 0, 2, 1, hc); pxr(g, hx + 4, hy + 0, 2, 1, hc);
+                pxr(g, hx + 0, hy + 1, 6, 3, hc);
+                pxr(g, hx + 1, hy + 4, 4, 1, hc);
+                pxr(g, hx + 2, hy + 5, 2, 1, hc);
+                px(g, hx + 3, hy + 6, hc);
+                if (filled) { pxr(g, hx + 1, hy + 1, 2, 1, "rgba(255,255,255,0.35)"); }
+            }
+
+            // Score
+            let sc = String(score);
+            let sw = textWidth(sc);
+            drawText(g, sc, Math.floor(GW / 2 - sw / 2), 3, "#ffffff");
+            drawText(g, "SCORE", Math.floor(GW / 2 - textWidth("SCORE") / 2), 11, "#8888cc");
+
+            // Combo
+            if (combo > 1) {
+                let pulse = Math.floor(t / 200) % 2 === 0 ? "#FFD700" : "#FF9900";
+                let cs = "x" + combo + " COMBO!";
+                drawText(g, cs, Math.floor(GW / 2 - textWidth(cs) / 2), 19, pulse);
+            }
+
+            // Best
+            drawText(g, "BEST", GW - textWidth("BEST") - 3, 3, "#8888cc");
+            let hs = String(highScore);
+            drawText(g, hs, GW - textWidth(hs) - 3, 11, "#aaaadd");
+
+            // bottom legend
+            let items = [
+                { draw: drawPixelPizza, label: "pizza" },
+                { draw: drawPixelFish, label: "fish" },
+                { draw: drawPixelStar, label: "star" },
+                { draw: drawPixelBomb, label: "bomb" },
+                { draw: drawPixelChair, label: "chair" },
+                { draw: drawPixelPiano, label: "piano" },
+            ];
+            let lx = 2;
+            items.forEach((li, i) => {
+                g.save(); g.translate(lx + i * 36, GH - 12); g.scale(0.45, 0.45); li.draw(g, 0, 0, 0); g.restore();
+                let lc = i < 3 ? "#88ffaa" : "#ff7777";
+                drawText(g, li.label, lx + i * 36 + 7, GH - 7, lc);
+            });
+        }
+
+        // ── BACKGROUND ────────────────────────────────────────────────────────────
+        function drawBG(g, t) {
+            pxr(g, 0, 0, GW, GH, "#0d0f22");
+
+            // twinkling stars (pixel style)
+            for (let i = 0; i < stars.length; i++) {
+                let s = stars[i];
+                let on = Math.sin(t * 0.002 + s.tw) > 0.2;
+                if (on) px(g, Math.floor(s.x), Math.floor(s.y), "#ffffff");
+            }
+
+            // distant pixel city/ground silhouette
+            let buildings = [
+                [0, 4, GH - 24], [10, 7, GH - 27], [22, 5, GH - 25], [34, 8, GH - 28], [48, 4, GH - 24],
+                [58, 6, GH - 26], [70, 9, GH - 29], [84, 5, GH - 25], [96, 7, GH - 27], [110, 4, GH - 24],
+                [122, 8, GH - 28], [136, 5, GH - 25], [148, 6, GH - 26], [160, 7, GH - 27], [174, 4, GH - 24],
+                [186, 9, GH - 29], [198, 5, GH - 25], [210, 6, GH - 26],
+            ];
+            buildings.forEach(([bx, bw, by]) => {
+                pxr(g, bx, by, bw, GH - by - 13, "#1a1a3a");
+                // windows
+                for (let wy = by + 2; wy < GH - 15; wy += 4) {
+                    for (let wx = bx + 1; wx < bx + bw - 1; wx += 3) {
+                        if (Math.sin(bx * 7 + wy * 3) > 0.2) pxr(g, wx, wy, 1, 1, "#ffffaa");
+                    }
+                }
+            });
+
+            // ground
+            pxr(g, 0, GH - 14, GW, 2, "#1e1e3e");
+            pxr(g, 0, GH - 15, GW, 1, "#333366");
+        }
+
+        // ── MAIN DRAW ─────────────────────────────────────────────────────────────
+        function draw(t) {
+            g.clearRect(0, 0, GW, GH);
+            drawBG(g, t);
+
+            if (state === "menu") {
+                // big pixel title
+                g.save(); g.scale(2, 2);
+                drawText(g, "CAT", Math.floor(GW / 2 / 2 - textWidth("CAT")), 10, "#FFD700");
+                drawText(g, "CHAOS", Math.floor(GW / 2 / 2 - textWidth("CHAOS") + 1), 18, "#FF6688");
+                g.restore();
+
+                // animated demo cat
+                drawPixelCat(g, Math.floor(GW / 2) - 7, GH / 2 - 10, 1, Math.floor(t / 300) % 2, Math.floor(t / 400) % 20 === 0);
+
+                // start button
+                let bx = Math.floor(GW / 2) - 22, by = Math.floor(GH * 0.65), bw = 44, bh = 10;
+                let bhov = (mx / SCALE > bx && mx / SCALE < bx + bw && my / SCALE > by && my / SCALE < by + bh);
+                pxr(g, bx, by, bw, bh, bhov ? "#7c6ff7" : "#534AB7");
+                pxr(g, bx + 1, by + 1, bw - 2, 1, "#9988ff");
+                drawText(g, "START", bx + 10, by + 3, "#ffffff");
+
+                if (highScore > 0) {
+                    drawText(g, "BEST:" + highScore, Math.floor(GW / 2 - textWidth("BEST:" + highScore) / 2), by + 16, "#aaaacc");
+                }
+                drawText(g, "ARROW KEYS TO MOVE", Math.floor(GW / 2 - textWidth("ARROW KEYS TO MOVE") / 2), GH - 28, "#556688");
+
+                drawHUD(g, t);
+                renderToCanvas(); return;
+            }
+
+            if (state === "playing" || state === "gameover") {
+                objects.forEach(o => {
+                    let d = DRAWERS[o.item.id];
+                    if (d) d(g, Math.floor(o.x), Math.floor(o.y), o.frame);
+                });
+
+                if (state === "playing") {
+                    let flash = invincTimer > 0 && Math.floor(invincTimer / 6) % 2 === 1;
+                    if (!flash) drawPixelCat(g, Math.floor(player.x), Math.floor(player.y), player.facing, player.frame, player.blink);
+                }
+
+                // particles
+                particles.forEach(p => {
+                    let a = p.life / p.maxLife;
+                    if (a > 0.1) { g.globalAlpha = a; px(g, Math.floor(p.x), Math.floor(p.y), p.c); g.globalAlpha = 1; }
+                });
+
+                // floaters
+                floaters.forEach(f => {
+                    g.globalAlpha = f.life / 36;
+                    drawText(g, f.text, Math.floor(f.x), Math.floor(f.y), "#FFD700");
+                    g.globalAlpha = 1;
+                });
+            }
+
+            if (state === "gameover") {
+                pxr(g, 30, GH / 2 - 28, GW - 60, 50, "#0d0f22");
+                pxr(g, 30, GH / 2 - 28, GW - 60, 1, "#ff4444");
+                pxr(g, 30, GH / 2 + 22, GW - 60, 1, "#ff4444");
+                pxr(g, 30, GH / 2 - 28, 1, 50, "#ff4444");
+                pxr(g, GW - 31, GH / 2 - 28, 1, 50, "#ff4444");
+
+                g.save(); g.scale(2, 2);
+                drawText(g, "BONKED!", Math.floor(GW / 2 / 2 - textWidth("BONKED!")), Math.floor(GH / 2 / 2) - 20, "#ff4466");
+                g.restore();
+
+                drawText(g, "SCORE:" + score, Math.floor(GW / 2 - textWidth("SCORE:" + score) / 2), GH / 2 - 4, "#ffffff");
+                if (score > 0 && score >= highScore) { drawText(g, "NEW BEST!", Math.floor(GW / 2 - textWidth("NEW BEST!") / 2), GH / 2 + 5, "#FFD700"); }
+                else if (highScore > 0) { drawText(g, "BEST:" + highScore, Math.floor(GW / 2 - textWidth("BEST:" + highScore) / 2), GH / 2 + 5, "#8888cc"); }
+
+                let bx = Math.floor(GW / 2) - 22, by = GH / 2 + 14, bw = 44, bh = 10;
+                let bhov = (mx / SCALE > bx && mx / SCALE < bx + bw && my / SCALE > by && my / SCALE < by + bh);
+                pxr(g, bx, by, bw, bh, bhov ? "#7c6ff7" : "#534AB7");
+                pxr(g, bx + 1, by + 1, bw - 2, 1, "#9988ff");
+                drawText(g, "RETRY", bx + 10, by + 3, "#ffffff");
+            }
+
+            drawHUD(g, t);
+            renderToCanvas();
+        }
+
+        function renderToCanvas() {
+            ctx.save();
+            if (shake > 0.5) ctx.translate(
+                (Math.random() - 0.5) * shake * SCALE * 0.5,
+                (Math.random() - 0.5) * shake * SCALE * 0.5
+            );
+            ctx.clearRect(0, 0, C.width, C.height);
+            ctx.drawImage(oc, 0, 0, GW, GH, 0, 0, C.width, C.height);
+            ctx.restore();
+        }
+
+        C.addEventListener("mousemove", e => { let r = C.getBoundingClientRect(); mx = (e.clientX - r.left) * (C.width / r.width); my = (e.clientY - r.top) * (C.height / r.height); });
+        C.addEventListener("click", e => {
+            let r = C.getBoundingClientRect();
+            let cx = (e.clientX - r.left) * (C.width / r.width) / SCALE;
+            let cy = (e.clientY - r.top) * (C.height / r.height) / SCALE;
+            let bx = Math.floor(GW / 2) - 22;
+            if (state === "menu" && cx > bx && cx < bx + 44 && cy > GH * 0.65 && cy < GH * 0.65 + 10) { sfxMenu(); startGame(); }
+            if (state === "gameover" && cx > bx && cx < bx + 44 && cy > GH / 2 + 14 && cy < GH / 2 + 24) { sfxMenu(); startGame(); }
+        });
+
+        function loop(t) {
+            update();
+            draw(t);
+            lastTime = t;
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    </script>
+</body>
+
+</html>
