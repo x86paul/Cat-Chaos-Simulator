@@ -21,4 +21,4 @@ A high-energy, retro pixel-art arcade game built with vanilla JavaScript and the
 - **Zero Dependencies:** No engines or libraries used.
 
 # Use Of AI 
-I have used AI for helping me code.
+I have used AI for helping me code and write the Readme and also the description.
