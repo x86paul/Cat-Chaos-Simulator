@@ -1,6 +1,6 @@
 # 🐱 Cat Chaos Simulator
 A high-energy, retro pixel-art arcade game built with vanilla JavaScript and the Web Audio API.
-<img width="1489" height="672" alt="Gemini_Generated_Image_8cmin88cmin88cmi" src="https://github.com/user-attachments/assets/a6987634-b6ea-4069-ba49-676ed1b6e327" />
+<img width="877" height="788" alt="image" src="https://github.com/user-attachments/assets/f100e1b7-0fbe-4a50-9b35-7561d1e4bfaf" />
 ## 🎮 How to Play
 - **Objective:** Collect items to score points and build your combo while avoiding falling furniture!
 - **Controls:** Use `Arrow Keys` or `A/D` to move the cat.
@@ -21,4 +21,4 @@ A high-energy, retro pixel-art arcade game built with vanilla JavaScript and the
 - **Zero Dependencies:** No engines or libraries used.
 
 # Use Of AI 
-I have used AI for creating the images and also for helping me code.
+I have used AI for helping me code.
